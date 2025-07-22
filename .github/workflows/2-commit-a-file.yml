@@ -1,115 +1,172 @@
-name: Step 2 # Commit a file
+from flask import Flask, render_template, request, session
+from flask_socketio import SocketIO, join_room, emit
+import random
+from datetime import datetime
 
-# Checks if the learner completed tasks for step 2.
-# - Triggers when the user makes a push to the branch 'my-first-branch' and modifies the file 'PROFILE.md'.
-# - If all checks pass, the workflow is disabled so it doesn't run again. As such, workflow status badge will change to green.
+app = Flask(__name__)
+app.config["SECRET_KEY"] = "voidscream_1337"  # Keep it secret, keep it safe
+socketio = SocketIO(app)
 
-on:
-  push:
-    branches:
-      - "my-first-branch"
+# Mock database for connected users and messages
+users = {}  # {sid: nickname}
+messages = []  # List of {nickname, message, timestamp}
 
-permissions:
-  contents: read
-  actions: write
-  issues: write
+# Glitchy color palette for user messages
+VOID_COLORS = ['#ff00ff', '#00ff00', '#ff0000', '#00ffff', '#ffff00']
 
-env:
-  STEP_3_FILE: ".github/steps/3-open-a-pull-request.md"
+@app.route('/')
+def index():
+    return render_template('index.html')
 
+@socketio.on('connect')
+def handle_connect():
+    # Assign a random anon ID if none exists
+    if 'nickname' not in session:
+        session['nickname'] = f"Anon_{random.randint(1000, 9999)}"
+    users[request.sid] = session['nickname']
+    emit('welcome', {'message': f"{session['nickname']} joined the void!", 'color': random.choice(VOID_COLORS)}, broadcast=True)
+    # TODO: Send chat history to new user (last 50 messages)
 
-jobs:
-  find_exercise:
-    name: Find Exercise Issue
-    uses: skills/exercise-toolkit/.github/workflows/find-exercise-issue.yml@v0.1.0
+@socketio.on('message')
+def handle_message(data):
+    message = data['message']
+    if len(message) > 280:  # Void’s got limits
+        return
+    timestamp = datetime.now().strftime('%H:%M:%S')
+    msg_data = {
+        'nickname': users[request.sid],
+        'message': message,
+        'timestamp': timestamp,
+        'color': random.choice(VOID_COLORS)
+    }
+    messages.append(msg_data)
+    emit('new_message', msg_data, broadcast=True)
+    # TODO: Add message filtering (e.g., block spam or slurs)
 
-  check_step_work:
-    name: Check step work
-    runs-on: ubuntu-latest
-    needs: find_exercise
-    if: |
-      !github.event.repository.is_template
-    env:
-      ISSUE_URL: ${{ needs.find_exercise.outputs.issue-url }}
+@socketio.on('disconnect')
+def handle_disconnect():
+    nickname = users.get(request.sid, 'Anon')
+    del users[request.sid]
+    emit('leave', {'message': f"{nickname} fled the void!", 'color': '#ff0000'}, broadcast=True)
+    # TODO: Log disconnects to a file for void analytics
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+if __name__ == "__main__":
+    socketio.run(app, host='0.0.0.0', port=5000, debug=True)
+    # TODO: Add CLI args for custom host/port (e.g., python main.py --host 127.0.0.1 --port 8080)<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>##Voidscream</title>
+    <style>
+        body {
+            background: #000;
+            color: #0f0;
+            font-family: 'Courier New', monospace;
+            margin: 0;
+            padding: 20px;
+        }
+        #chat-container {
+            max-width: 800px;
+            margin: auto;
+            border: 2px solid #ff00ff;
+            padding: 20px;
+            background: rgba(0, 0, 0, 0.9);
+        }
+        #messages {
+            height: 500px;
+            overflow-y: auto;
+            margin-bottom: 20px;
+            border: 1px solid #00ffff;
+        }
+        .message {
+            margin: 10px;
+            animation: glitch 1s infinite;
+        }
+        @keyframes glitch {
+            0% { transform: translate(0); }
+            20% { transform: translate(-2px, 2px); }
+            40% { transform: translate(2px, -2px); }
+            60% { transform: translate(-2px, 2px); }
+            80% { transform: translate(2px, -2px); }
+            100% { transform: translate(0); }
+        }
+        #input-form {
+            display: flex;
+        }
+        #message-input {
+            flex-grow: 1;
+            background: #111;
+            color: #0f0;
+            border: 1px solid #ff00ff;
+            padding: 10px;
+        }
+        #send-btn {
+            background: #ff00ff;
+            color: #000;
+            border: none;
+            padding: 10px;
+            cursor: pointer;
+        }
+        #send-btn:hover {
+            background: #00ffff;
+        }
+    </style>
+</head>
+<body>
+    <div id="chat-container">
+        <h1>##Voidscream</h1>
+        <div id="messages"></div>
+        <form id="input-form">
+            <input type="text" id="message-input" placeholder="Scream into the void..." maxlength="280">
+            <button type="submit" id="send-btn">Scream</button>
+        </form>
+    </div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.0/socket.io.js"></script>
+    <script>
+        const socket = io();
+        const messagesDiv = document.getElementById('messages');
+        const inputForm = document.getElementById('input-form');
+        const messageInput = document.getElementById('message-input');
 
-      - name: Get response templates
-        uses: actions/checkout@v4
-        with:
-          repository: skills/exercise-toolkit
-          path: exercise-toolkit
-          ref: v0.1.0
+        socket.on('welcome', (data) => {
+            addMessage(data.message, data.color);
+        });
 
+        socket.on('new_message', (data) => {
+            addMessage(`${data.nickname} [${data.timestamp}]: ${data.message}`, data.color);
+        });
 
-      - name: Update comment - checking work
-        run: |
-          gh issue comment "$ISSUE_URL" \
-            --body-file exercise-toolkit/markdown-templates/step-feedback/checking-work.md \
-            --edit-last
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        socket.on('leave', (data) => {
+            addMessage(data.message, data.color);
+        });
 
-      # START: Check practical exercise
+        function addMessage(message, color) {
+            const msg = document.createElement('div');
+            msg.className = 'message';
+            msg.style.color = color;
+            msg.textContent = message;
+            messagesDiv.appendChild(msg);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
 
-      # Nothing to verify. Creating the PROFILE.md file is enough.
+        inputForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const message = messageInput.value.trim();
+            if (message) {
+                socket.emit('message', { message });
+                messageInput.value = '';
+            }
+        });
 
-      # END: Check practical exercise
-
-
-      - name: Build message - step finished
-        id: build-message-step-finish
-        uses: skills/action-text-variables@v1
-        with:
-          template-file: exercise-toolkit/markdown-templates/step-feedback/step-finished-prepare-next-step.md
-          template-vars: |
-            next_step_number=3
-
-      - name: Update comment - step finished
-        run: |
-          gh issue comment "$ISSUE_URL" \
-            --body "${{ steps.build-message-step-finish.outputs.updated-text }}" \
-            --edit-last
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  post_next_step_content:
-    name: Post next step content
-    needs: [find_exercise, check_step_work]
-    runs-on: ubuntu-latest
-    env:
-      ISSUE_URL: ${{ needs.find_exercise.outputs.issue-url }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Get response templates
-        uses: actions/checkout@v4
-        with:
-          repository: skills/exercise-toolkit
-          path: exercise-toolkit
-          ref: v0.1.0
-
-      - name: Create comment - add step content
-        run: |
-          gh issue comment "$ISSUE_URL" \
-            --body-file ${{ env.STEP_3_FILE }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create comment - watching for progress
-        run: |
-          gh issue comment "$ISSUE_URL" \
-            --body-file exercise-toolkit/markdown-templates/step-feedback/watching-for-progress.md
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Disable current workflow and enable next one
-        run: |
-          gh workflow disable "Step 2"
-          gh workflow enable "Step 3"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        // TODO: Add glitch effect on message hover
+        // TODO: Add nickname change functionality
+        // TODO: Handle connection errors with a retry mechanism
+    </script>
+</body>
+</html>mkdir voidscream_chat
+cd voidscream_chat
+python -m venv venv
+source venv/bin/activate  # Linux/Mac
+venv\Scripts\activate  # Windows
+pip install flask flask-socketio
